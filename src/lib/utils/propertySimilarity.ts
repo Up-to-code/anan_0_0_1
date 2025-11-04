@@ -38,7 +38,7 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
     totalWeight += 15;
     const queryDistrict = query.district.toLowerCase().trim();
     const propertyDistrict = property.district.toLowerCase().trim();
-    
+
     if (propertyDistrict === queryDistrict) {
       score += 15;
     } else if (propertyDistrict.includes(queryDistrict) || queryDistrict.includes(propertyDistrict)) {
@@ -57,12 +57,14 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
   }
 
   // Price matching (weight: 25%)
-  if (query.minPrice !== undefined && query.minPrice !== null || 
-      query.maxPrice !== undefined && query.maxPrice !== null) {
+  if (
+    (query.minPrice !== undefined && query.minPrice !== null) ||
+    (query.maxPrice !== undefined && query.maxPrice !== null)
+  ) {
     totalWeight += 25;
-    const minPrice = query.minPrice || 0;
-    const maxPrice = query.maxPrice || Infinity;
-    
+    const minPrice = query.minPrice ?? 0;
+    const maxPrice = query.maxPrice ?? Infinity;
+
     if (property.price >= minPrice && property.price <= maxPrice) {
       score += 25; // Perfect match
     } else {
@@ -82,9 +84,17 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
     totalWeight += 10;
     if (property.bedrooms === query.bedrooms) {
       score += 10;
-    } else if (property.bedrooms && Math.abs(property.bedrooms - query.bedrooms) <= 1) {
+    } else if (
+      property.bedrooms !== undefined &&
+      property.bedrooms !== null &&
+      Math.abs(property.bedrooms - query.bedrooms) <= 1
+    ) {
       score += 7; // Close match (±1 bedroom)
-    } else if (property.bedrooms && Math.abs(property.bedrooms - query.bedrooms) <= 2) {
+    } else if (
+      property.bedrooms !== undefined &&
+      property.bedrooms !== null &&
+      Math.abs(property.bedrooms - query.bedrooms) <= 2
+    ) {
       score += 4; // Fair match (±2 bedrooms)
     }
   }
@@ -94,22 +104,33 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
     totalWeight += 5;
     if (property.bathrooms === query.bathrooms) {
       score += 5;
-    } else if (property.bathrooms && Math.abs(property.bathrooms - query.bathrooms) <= 1) {
+    } else if (
+      property.bathrooms !== undefined &&
+      property.bathrooms !== null &&
+      Math.abs(property.bathrooms - query.bathrooms) <= 1
+    ) {
       score += 3; // Close match
     }
   }
 
   // Area matching (weight: 10%)
-  if (query.minArea !== undefined && query.minArea !== null || 
-      query.maxArea !== undefined && query.maxArea !== null ||
-      query.area !== undefined && query.area !== null) {
+  if (
+    (query.minArea !== undefined && query.minArea !== null) ||
+    (query.maxArea !== undefined && query.maxArea !== null) ||
+    (query.area !== undefined && query.area !== null)
+  ) {
     totalWeight += 10;
-    const minArea = query.minArea || query.area || 0;
-    const maxArea = query.maxArea || Infinity;
-    
-    if (property.area && property.area >= minArea && property.area <= maxArea) {
+    const minArea = query.minArea ?? query.area ?? 0;
+    const maxArea = query.maxArea ?? Infinity;
+
+    if (
+      property.area !== undefined &&
+      property.area !== null &&
+      property.area >= minArea &&
+      property.area <= maxArea
+    ) {
       score += 10;
-    } else if (property.area) {
+    } else if (property.area !== undefined && property.area !== null) {
       // Calculate area similarity
       const areaDiff = Math.min(
         Math.abs(property.area - minArea),
@@ -122,11 +143,21 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
   }
 
   // Features matching (weight: 5% each)
-  const features: Array<keyof Property> = ['pool', 'garden', 'furnished', 'elevator', 'parking'];
-  features.forEach(feature => {
-    if (query[feature] !== undefined && query[feature] !== null) {
+  // Fix: Only attempt to access feature keys on SearchQuery that are guaranteed to exist
+  // and have correct typing. We'll use an explicit feature list of SearchQuery, not Property,
+  // and cast to the same type.
+  const featureFields: Array<keyof Pick<SearchQuery, 'pool' | 'garden' | 'furnished' | 'elevator' | 'parking'>> = [
+    'pool',
+    'garden',
+    'furnished',
+    'elevator',
+    'parking'
+  ];
+  featureFields.forEach((feature) => {
+    const searchVal = query[feature];
+    if (searchVal !== undefined && searchVal !== null) {
       totalWeight += 1;
-      if (property[feature] === query[feature]) {
+      if ((property as any)[feature] === searchVal) {
         score += 1;
       }
     }
@@ -145,8 +176,8 @@ export function calculateSimilarity(property: Property, query: SearchQuery): num
  * Filter and sort properties by similarity
  */
 export function findSimilarProperties(
-  properties: Property[], 
-  query: SearchQuery, 
+  properties: Property[],
+  query: SearchQuery,
   minSimilarity: number = 0.58
 ): PropertyWithSimilarity[] {
   const propertiesWithSimilarity = properties.map(property => ({
