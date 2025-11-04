@@ -270,10 +270,7 @@ export async function POST(request: NextRequest) {
         requestId,
         object: body.object,
         entryCount: body.entry?.length || 0,
-        messageCount: body.entry?.reduce((acc, entry) => 
-          acc + (entry.changes.find(c => c.field === 'messages')?.value.messages?.length || 0), 0) || 0,
-        statusCount: body.entry?.reduce((acc, entry) => 
-          acc + (entry.changes.find(c => c.field === 'messages')?.value.statuses?.length || 0), 0) || 0
+        rawBody: JSON.stringify(body).substring(0, 500)
       });
     } catch (parseError) {
       log('error', '❌ Failed to Parse Request Body', {
@@ -283,72 +280,83 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     
+    // IMPORTANT: Respond to WhatsApp immediately with 200 to avoid retries
+    // We'll process the message asynchronously after responding
+    log('info', '⚡ Sending immediate 200 response to WhatsApp', { requestId });
+    
     // Get WhatsApp handler
-    log('info', '🔧 Getting WhatsApp Handler', { requestId });
     const handler = getDefaultWhatsAppHandler();
     
-    // CRITICAL FIX: Create a promise to track when all message processing is complete
-    const messageProcessingPromises: Promise<void>[] = [];
-
-    // Set webhook handlers BEFORE processing the webhook
-    log('info', '🔗 Setting Webhook Handlers', { requestId });
-    handler.setWebhookHandlers({
-      onMessage: async (message) => {
-        const msgStartTime = Date.now();
-        log('info', '🔔 onMessage Handler Triggered', {
+    // Process webhook in the background (don't await)
+    // Vercel will keep the function alive to complete this
+    void (async () => {
+      try {
+        log('info', '🔄 Background processing started', { requestId });
+        
+        // Extract messages from webhook body
+        const messages: Array<{ id: string; from: string; type?: string; text?: { body: string } }> = [];
+        
+        for (const entry of body.entry || []) {
+          for (const change of entry.changes || []) {
+            if (change.field === 'messages' && change.value?.messages) {
+              messages.push(...change.value.messages);
+            }
+          }
+        }
+        
+        log('info', '📨 Found messages to process', {
           requestId,
-          messageId: message.id,
-          from: message.from,
-          type: message.type,
-          hasText: !!message.text?.body
+          count: messages.length,
+          messageIds: messages.map(m => m.id)
         });
         
-        // Create a promise for this message processing
-        const processingPromise = (async () => {
+        // Process each message
+        for (const message of messages) {
+          const msgStartTime = Date.now();
+          
           try {
+            log('info', '🔔 Processing message', {
+              requestId,
+              messageId: message.id,
+              from: message.from,
+              type: message.type,
+              hasText: !!message.text?.body
+            });
+            
             // Mark as read immediately
             if (message.id) {
-              log('info', '✅ Marking Message as Read', {
-                requestId,
-                messageId: message.id
-              });
-              
               try {
-                const markResult = await handler.markAsRead(message.id);
-                log('info', '✅ Message Marked as Read', {
+                await handler.markAsRead(message.id);
+                log('info', '✅ Message marked as read', {
                   requestId,
-                  messageId: message.id,
-                  result: markResult
+                  messageId: message.id
                 });
               } catch (markError) {
-                log('error', '❌ Failed to Mark Message as Read', {
+                log('error', '❌ Failed to mark as read', {
                   requestId,
                   messageId: message.id,
-                  error: markError instanceof Error ? markError.message : String(markError),
-                  stack: markError instanceof Error ? markError.stack : undefined
+                  error: markError instanceof Error ? markError.message : String(markError)
                 });
               }
             }
 
             const whatsappMessage: WhatsAppMessage = {
               ...message,
-              to: (message as Record<string, unknown>).to as string || '',
+              to: '',
               type: (message.type || 'unknown') as WhatsAppMessage['type']
             } as WhatsAppMessage;
             
             logMessageDetails(whatsappMessage);
             
             if (!shouldProcessMessage(whatsappMessage)) {
-              log('info', '⏭️ Skipping Message - Not Processable', {
+              log('info', '⏭️ Skipping message - not processable', {
                 requestId,
-                messageId: message.id,
-                type: whatsappMessage.type,
-                isUserMessage: isUserMessage(whatsappMessage)
+                messageId: message.id
               });
-              return;
+              continue;
             }
             
-            log('info', '🔄 Processing Message', {
+            log('info', '🔄 Calling processMessage', {
               requestId,
               messageId: message.id
             });
@@ -357,105 +365,54 @@ export async function POST(request: NextRequest) {
             await processMessage(whatsappMessage as any, handler);
             
             const msgDuration = Date.now() - msgStartTime;
-            log('info', '✅ Message Processed Successfully', {
+            log('info', '✅ Message processed successfully', {
               requestId,
               messageId: message.id,
               durationMs: msgDuration
             });
           } catch (error) {
-            log('error', '❌ Error Processing Message', {
+            log('error', '❌ Error processing message', {
               requestId,
               messageId: message.id,
               error: error instanceof Error ? error.message : String(error),
               stack: error instanceof Error ? error.stack : undefined
             });
             
+            // Try to send error message to user
             try {
-              const errorMessage = 'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.';
-              const messageFrom = message?.from;
-              if (messageFrom) {
-                log('info', '📤 Sending Error Message to User', {
-                  requestId,
-                  to: messageFrom
-                });
-                await handler.sendMessage(messageFrom, errorMessage);
-                log('info', '✅ Error Message Sent', { requestId });
+              if (message.from) {
+                await handler.sendMessage(
+                  message.from,
+                  'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.'
+                );
               }
             } catch (sendError) {
-              log('error', '❌ Failed to Send Error Message', {
+              log('error', '❌ Failed to send error message', {
                 requestId,
                 error: sendError instanceof Error ? sendError.message : String(sendError)
               });
             }
           }
-        })();
-        
-        // Add to tracking array
-        messageProcessingPromises.push(processingPromise);
-      },
-      
-      onMessageStatus: (status) => {
-        log('info', '🔔 onMessageStatus Handler Triggered', {
-          requestId,
-          statusId: status.id,
-          status: status.status,
-          recipientId: status.recipient_id
-        });
-        
-        try {
-          logStatusDetails(status as MessageStatus);
-        } catch (error) {
-          log('error', '❌ Error Logging Status', {
-            requestId,
-            error: error instanceof Error ? error.message : String(error)
-          });
         }
-      },
-      
-      onError: (error) => {
-        log('error', '❌ Webhook Handler Error', {
+        
+        const totalDuration = Date.now() - startTime;
+        log('info', '✅ Background processing completed', {
           requestId,
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined
+          totalDurationMs: totalDuration,
+          messagesProcessed: messages.length
         });
-      },
-    });
+      } catch (bgError) {
+        log('error', '❌ Background processing error', {
+          requestId,
+          error: bgError instanceof Error ? bgError.message : String(bgError),
+          stack: bgError instanceof Error ? bgError.stack : undefined
+        });
+      }
+    })();
     
-    log('info', '✅ Handlers Set Successfully', { requestId });
-
-    // Process webhook request
-    const shouldVerifySignature = process.env.WHATSAPP_APP_SECRET && signature;
-    log('info', '🔐 Signature Verification Check', {
-      requestId,
-      shouldVerify: shouldVerifySignature,
-      hasAppSecret: !!process.env.WHATSAPP_APP_SECRET,
-      hasSignature: !!signature
-    });
+    // Return immediate 200 response
+    return NextResponse.json({ status: 'received' }, { status: 200 });
     
-    log('info', '📞 Calling processWebhookRequest', { requestId });
-    const result = await handler.processWebhookRequest(
-      body, 
-      shouldVerifySignature ? signature : undefined
-    );
-    
-    // CRITICAL FIX: Wait for all message processing to complete
-    log('info', '⏳ Waiting for all message processing to complete...', {
-      requestId,
-      pendingMessages: messageProcessingPromises.length
-    });
-    
-    await Promise.all(messageProcessingPromises);
-    
-    log('info', '✅ All messages processed', { requestId });
-    
-    const duration = Date.now() - startTime;
-    log('info', '🎉 POST Request Completed Successfully', {
-      requestId,
-      durationMs: duration,
-      result
-    });
-    
-    return NextResponse.json(result, { status: 200 });
   } catch (error: unknown) {
     const duration = Date.now() - startTime;
     log('error', '❌ POST Request Error', {
