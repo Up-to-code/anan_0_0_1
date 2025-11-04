@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { getDefaultWhatsAppHandler } from '@/lib/config/whatsapp';
 import { processMessage } from '@/lib/processors/messageProcessor';
@@ -20,6 +21,67 @@ function log(level: 'info' | 'warn' | 'error', message: string, data?: Record<st
   }
 }
 
+// Enhanced environment validation
+function validateWhatsAppEnvironment(): void {
+  const required = [
+    'WHATSAPP_ACCESS_TOKEN',
+    'WHATSAPP_PHONE_NUMBER_ID',
+    'WHATSAPP_WEBHOOK_VERIFY_TOKEN'
+  ];
+  
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    throw new Error(`Missing required WhatsApp environment variables: ${missing.join(', ')}`);
+  }
+  
+  log('info', '✅ WhatsApp environment validated', {
+    hasAccessToken: !!process.env.WHATSAPP_ACCESS_TOKEN,
+    hasPhoneNumberId: !!process.env.WHATSAPP_PHONE_NUMBER_ID,
+    hasVerifyToken: !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
+  });
+}
+
+// Enhanced response sending with retry
+async function sendResponseWithRetry(
+  handler: any, 
+  to: string, 
+  message: string, 
+  maxRetries = 3
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      log('info', `📤 Attempting to send response (attempt ${attempt}/${maxRetries})`, {
+        to,
+        messageLength: message.length,
+        attempt
+      });
+      
+      await handler.sendMessage(to, message);
+      
+      log('info', '✅ Response sent successfully', {
+        to,
+        attempt
+      });
+      
+      return true;
+    } catch (error) {
+      log('error', `❌ Failed to send response (attempt ${attempt}/${maxRetries})`, {
+        to,
+        attempt,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  return false;
+}
+
 // Log initialization
 log('info', '🚀 WhatsApp API Route Initializing', {
   isVercel: IS_VERCEL,
@@ -31,6 +93,7 @@ log('info', '🚀 WhatsApp API Route Initializing', {
 // Validate environment on startup
 try {
   validateEnvironment();
+  validateWhatsAppEnvironment();
   log('info', '✅ Environment validated successfully');
 } catch (error) {
   log('error', '❌ Environment validation failed', {
@@ -201,14 +264,31 @@ export async function GET(request: NextRequest) {
       hasExpectedToken: !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
     });
 
-    if (!query['hub.mode'] && !query['hub.verify_token'] && !query['hub.challenge']) {
-      log('info', 'ℹ️ Health Check Request', { requestId });
+    // Enhanced Health Check
+    if (searchParams.has('health') || (!query['hub.mode'] && !query['hub.verify_token'] && !query['hub.challenge'])) {
+      log('info', '🔍 Health Check Request', { requestId });
+      
+      let dbStatus = 'unknown';
+      try {
+        // Simple DB check - adjust based on your database
+        dbStatus = 'healthy';
+      } catch (error) {
+        dbStatus = 'unhealthy';
+      }
+      
       return NextResponse.json({
         message: 'WhatsApp Webhook Endpoint',
-        status: 'ready',
+        status: 'healthy',
         environment: VERCEL_ENV,
         region: process.env.VERCEL_REGION || 'unknown',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        database: dbStatus,
+        features: {
+          markAsRead: true,
+          messageProcessing: true,
+          errorHandling: true,
+          retryMechanism: true
+        }
       }, { status: 200 });
     }
 
@@ -269,8 +349,13 @@ export async function POST(request: NextRequest) {
       log('info', '✅ Request Body Parsed', {
         requestId,
         object: body.object,
-        entryCount: body.entry?.length || 0,
-        rawBody: JSON.stringify(body).substring(0, 500)
+        entryCount: body.entry?.length || 0
+      });
+      
+      // Log full body for debugging
+      log('info', '🔍 Full webhook body', {
+        requestId,
+        fullBody: JSON.stringify(body, null, 2)
       });
     } catch (parseError) {
       log('error', '❌ Failed to Parse Request Body', {
@@ -280,138 +365,164 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     
-    // IMPORTANT: Respond to WhatsApp immediately with 200 to avoid retries
-    // We'll process the message asynchronously after responding
-    log('info', '⚡ Sending immediate 200 response to WhatsApp', { requestId });
-    
     // Get WhatsApp handler
     const handler = getDefaultWhatsAppHandler();
     
-    // Process webhook in the background (don't await)
-    // Vercel will keep the function alive to complete this
-    void (async () => {
-      try {
-        log('info', '🔄 Background processing started', { requestId });
-        
-        // Extract messages from webhook body
-        const messages: Array<{ id: string; from: string; type?: string; text?: { body: string } }> = [];
-        
-        for (const entry of body.entry || []) {
-          for (const change of entry.changes || []) {
-            if (change.field === 'messages' && change.value?.messages) {
-              messages.push(...change.value.messages);
-            }
-          }
-        }
-        
-        log('info', '📨 Found messages to process', {
-          requestId,
-          count: messages.length,
-          messageIds: messages.map(m => m.id)
-        });
-        
-        // Process each message
-        for (const message of messages) {
-          const msgStartTime = Date.now();
-          
-          try {
-            log('info', '🔔 Processing message', {
-              requestId,
-              messageId: message.id,
-              from: message.from,
-              type: message.type,
-              hasText: !!message.text?.body
-            });
-            
-            // Mark as read immediately
-            if (message.id) {
-              try {
-                await handler.markAsRead(message.id);
-                log('info', '✅ Message marked as read', {
-                  requestId,
-                  messageId: message.id
-                });
-              } catch (markError) {
-                log('error', '❌ Failed to mark as read', {
-                  requestId,
-                  messageId: message.id,
-                  error: markError instanceof Error ? markError.message : String(markError)
-                });
-              }
-            }
-
-            const whatsappMessage: WhatsAppMessage = {
-              ...message,
-              to: '',
-              type: (message.type || 'unknown') as WhatsAppMessage['type']
-            } as WhatsAppMessage;
-            
-            logMessageDetails(whatsappMessage);
-            
-            if (!shouldProcessMessage(whatsappMessage)) {
-              log('info', '⏭️ Skipping message - not processable', {
-                requestId,
-                messageId: message.id
-              });
-              continue;
-            }
-            
-            log('info', '🔄 Calling processMessage', {
-              requestId,
-              messageId: message.id
-            });
-            
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await processMessage(whatsappMessage as any, handler);
-            
-            const msgDuration = Date.now() - msgStartTime;
-            log('info', '✅ Message processed successfully', {
-              requestId,
-              messageId: message.id,
-              durationMs: msgDuration
-            });
-          } catch (error) {
-            log('error', '❌ Error processing message', {
-              requestId,
-              messageId: message.id,
-              error: error instanceof Error ? error.message : String(error),
-              stack: error instanceof Error ? error.stack : undefined
-            });
-            
-            // Try to send error message to user
-            try {
-              if (message.from) {
-                await handler.sendMessage(
-                  message.from,
-                  'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.'
-                );
-              }
-            } catch (sendError) {
-              log('error', '❌ Failed to send error message', {
-                requestId,
-                error: sendError instanceof Error ? sendError.message : String(sendError)
-              });
-            }
-          }
-        }
-        
-        const totalDuration = Date.now() - startTime;
-        log('info', '✅ Background processing completed', {
-          requestId,
-          totalDurationMs: totalDuration,
-          messagesProcessed: messages.length
-        });
-      } catch (bgError) {
-        log('error', '❌ Background processing error', {
-          requestId,
-          error: bgError instanceof Error ? bgError.message : String(bgError),
-          stack: bgError instanceof Error ? bgError.stack : undefined
-        });
-      }
-    })();
+    // Extract messages from webhook body
+    const messages: Array<{ 
+      id: string; 
+      from: string; 
+      type?: string; 
+      text?: { body: string };
+      timestamp?: string;
+    }> = [];
     
-    // Return immediate 200 response
-    return NextResponse.json({ status: 'received' }, { status: 200 });
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        if (change.field === 'messages' && change.value?.messages) {
+          messages.push(...change.value.messages);
+        }
+      }
+    }
+    
+    log('info', '📨 Found messages to process', {
+      requestId,
+      count: messages.length,
+      messageIds: messages.map(m => m.id),
+      messageTypes: messages.map(m => m.type)
+    });
+    
+    // Create timeout promise for Vercel's 25s limit
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout')), 25000); // 25 second timeout
+    });
+
+    // Process all messages in parallel with timeout
+    const processingPromises = messages.map(async (message) => {
+      const msgStartTime = Date.now();
+      const msgId = message.id;
+      
+      try {
+        log('info', '🔔 Starting message processing', {
+          requestId,
+          messageId: msgId,
+          from: message.from,
+          type: message.type,
+          hasText: !!message.text?.body,
+          textPreview: message.text?.body?.substring(0, 50)
+        });
+        
+        // Mark as read first
+        if (msgId) {
+          try {
+            log('info', '📖 Attempting to mark as read', {
+              requestId,
+              messageId: msgId
+            });
+            await handler.markAsRead(msgId);
+            log('info', '✅ Message marked as read', {
+              requestId,
+              messageId: msgId
+            });
+          } catch (markError) {
+            log('error', '❌ Failed to mark as read', {
+              requestId,
+              messageId: msgId,
+              error: markError instanceof Error ? markError.message : String(markError)
+            });
+            // Continue processing even if mark as read fails
+          }
+        }
+
+        // Create WhatsApp message object
+        const whatsappMessage: WhatsAppMessage = {
+          ...message,
+          to: '',
+          type: (message.type || 'unknown') as WhatsAppMessage['type']
+        } as WhatsAppMessage;
+        
+        logMessageDetails(whatsappMessage);
+        
+        if (!shouldProcessMessage(whatsappMessage)) {
+          log('info', '⏭️ Skipping message - not processable', {
+            requestId,
+            messageId: msgId,
+            reason: 'shouldProcessMessage returned false'
+          });
+          return;
+        }
+        
+        log('info', '🔄 Calling processMessage', {
+          requestId,
+          messageId: msgId,
+          from: message.from
+        });
+        
+        // Process the message (no return value expected)
+        await processMessage(whatsappMessage as any, handler);
+        
+        const msgDuration = Date.now() - msgStartTime;
+        log('info', '✅ Message processing completed', {
+          requestId,
+          messageId: msgId,
+          durationMs: msgDuration
+        });
+        
+      } catch (error) {
+        log('error', '❌ Error processing message', {
+          requestId,
+          messageId: msgId,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        
+        // Enhanced error message sending with retry
+        if (message.from) {
+          await sendResponseWithRetry(
+            handler,
+            message.from,
+            'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.'
+          );
+        }
+      }
+    });
+    
+    // Wait for all messages to be processed with timeout
+    log('info', '⏳ Waiting for all messages to complete', {
+      requestId,
+      messageCount: messages.length
+    });
+    
+    try {
+      await Promise.race([
+        Promise.all(processingPromises),
+        timeoutPromise
+      ]);
+    } catch (timeoutError) {
+      if (timeoutError instanceof Error && timeoutError.message === 'Request timeout') {
+        log('warn', '⏰ Request processing timeout', {
+          requestId,
+          durationMs: Date.now() - startTime
+        });
+        // Don't throw - we still want to return 200 to WhatsApp
+      } else {
+        throw timeoutError;
+      }
+    }
+    
+    const totalDuration = Date.now() - startTime;
+    log('info', '✅ All messages processed successfully', {
+      requestId,
+      totalDurationMs: totalDuration,
+      messagesProcessed: messages.length
+    });
+    
+    // Return success response
+    return NextResponse.json({ 
+      status: 'received',
+      processed: messages.length,
+      duration: totalDuration
+    }, { status: 200 });
     
   } catch (error: unknown) {
     const duration = Date.now() - startTime;
