@@ -1,14 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { prisma } from './prisma';
-import { 
-  Property, 
-  SearchQuery, 
-  Event, 
-  ConversationState, 
-  PropertyType, 
+import {
+  Property,
+  SearchQuery,
+  Event,
+  ConversationState,
+  PropertyType,
   PropertyPurpose,
-  EventStatus 
+  EventStatus
 } from '@/types';
+
+function toNullOrUndefinedPrismaJson(value: any) {
+  // Prisma expects undefined to skip, or Prisma.JsonNull for nullable fields.
+  // We let undefined mean "don't change", null means "set to null" explicitly.
+  return value === undefined ? undefined : value === null ? null : value;
+}
 
 export const db = {
   // Property operations
@@ -17,7 +23,7 @@ export const db = {
       const properties = await prisma.property.findMany({
         orderBy: { createdAt: 'desc' }
       });
-      
+
       return properties.map((p: any) => ({
         id: p.id,
         legalNumber: p.legalNumber,
@@ -37,14 +43,14 @@ export const db = {
         images: p.images
       }));
     },
-    
+
     findById: async (id: string): Promise<Property | null> => {
       const property = await prisma.property.findUnique({
         where: { id }
       });
-      
+
       if (!property) return null;
-      
+
       return {
         id: property.id,
         legalNumber: property.legalNumber,
@@ -64,14 +70,14 @@ export const db = {
         images: property.images
       };
     },
-    
+
     findByLegalNumber: async (legalNumber: string): Promise<Property | null> => {
       const property = await prisma.property.findUnique({
         where: { legalNumber }
       });
-      
+
       if (!property) return null;
-      
+
       return {
         id: property.id,
         legalNumber: property.legalNumber,
@@ -91,11 +97,11 @@ export const db = {
         images: property.images
       };
     },
-    
+
     search: async (query: SearchQuery): Promise<Property[]> => {
       // Handle both 'area' and 'minArea' for backward compatibility
       const minArea = (query as any).minArea || query.area;
-      
+
       // First try exact match
       const exactMatches = await prisma.property.findMany({
         where: {
@@ -144,13 +150,13 @@ export const db = {
       // This will be done in the handler with similarity calculation
       return [];
     },
-    
+
     searchWithSimilarity: async (query: SearchQuery): Promise<Property[]> => {
       // Get all properties for similarity matching
       const allProperties = await prisma.property.findMany({
         orderBy: { createdAt: 'desc' }
       });
-      
+
       return allProperties.map((p: any) => ({
         id: p.id,
         legalNumber: p.legalNumber,
@@ -170,11 +176,11 @@ export const db = {
         images: p.images
       }));
     },
-    
+
     seed: async (): Promise<void> => {
       const count = await prisma.property.count();
       if (count > 0) return;
-      
+
       await prisma.property.createMany({
         data: [
           {
@@ -215,7 +221,7 @@ export const db = {
       });
     }
   },
-  
+
   // Event operations
   events: {
     create: async (event: Omit<Event, 'id' | 'timestamp' | 'status'>): Promise<Event> => {
@@ -223,13 +229,13 @@ export const db = {
       let user = await prisma.user.findUnique({
         where: { phone: event.userId }
       });
-      
+
       if (!user) {
         user = await prisma.user.create({
           data: { phone: event.userId }
         });
       }
-      
+
       const newEvent = await prisma.event.create({
         data: {
           type: event.type,
@@ -238,7 +244,7 @@ export const db = {
           pdfFilePath: event.details.pdfFilePath || null
         }
       });
-      
+
       return {
         id: newEvent.id,
         userId: event.userId, // Return phone number for consistency
@@ -249,41 +255,41 @@ export const db = {
         pdfFilePath: newEvent.pdfFilePath || undefined
       };
     },
-    
+
     updateStatus: async (id: string, status: EventStatus): Promise<boolean> => {
       const result = await prisma.event.update({
         where: { id },
         data: { status }
       });
-      
+
       return !!result;
     },
-    
+
     updatePdfPath: async (id: string, pdfFilePath: string): Promise<boolean> => {
       const result = await prisma.event.update({
         where: { id },
         data: { pdfFilePath }
       });
-      
+
       return !!result;
     }
   },
-  
+
   // Conversation operations
   conversations: {
     getHistory: async (userId: string) => {
       const user = await prisma.user.findUnique({
         where: { phone: userId }
       });
-      
+
       if (!user) return [];
-      
+
       const messages = await prisma.message.findMany({
         where: { userId: user.id },
         orderBy: { timestamp: 'asc' },
         take: 20
       });
-      
+
       return messages.map((m: any) => ({
         id: m.id,
         content: m.content,
@@ -291,18 +297,18 @@ export const db = {
         timestamp: m.timestamp.toISOString()
       }));
     },
-    
+
     addToHistory: async (userId: string, message: { role: 'user' | 'assistant'; content: string }) => {
       let user = await prisma.user.findUnique({
         where: { phone: userId }
       });
-      
+
       if (!user) {
         user = await prisma.user.create({
           data: { phone: userId }
         });
       }
-      
+
       await prisma.message.create({
         data: {
           content: message.content,
@@ -310,13 +316,13 @@ export const db = {
           userId: user.id
         }
       });
-      
+
       // Clean old messages
       const allMessages = await prisma.message.findMany({
         where: { userId: user.id },
         orderBy: { timestamp: 'desc' }
       });
-      
+
       if (allMessages.length > 20) {
         const messagesToDelete = allMessages.slice(20);
         await prisma.message.deleteMany({
@@ -326,18 +332,18 @@ export const db = {
         });
       }
     },
-    
+
     getState: async (userId: string): Promise<ConversationState | null> => {
       const user = await prisma.user.findUnique({
         where: { phone: userId }
       });
-      
+
       if (!user) return null;
-      
+
       const state = await prisma.conversationState.findUnique({
         where: { userId: user.id }
       });
-      
+
       if (!state) {
         return {
           userId,
@@ -345,41 +351,42 @@ export const db = {
           context: {}
         };
       }
-      
+
       return {
         userId,
         currentStep: state.step as ConversationState['currentStep'],
         context: state.context as Record<string, unknown>,
-        lastPropertyId: state.lastPropertyId || undefined,
-        lastSearchQuery: state.lastSearchQuery as SearchQuery | undefined
+        lastPropertyId: state.lastPropertyId === null ? undefined : state.lastPropertyId,
+        lastSearchQuery: state.lastSearchQuery === null ? undefined : (state.lastSearchQuery as SearchQuery | undefined)
       };
     },
-    
+
     updateState: async (state: ConversationState): Promise<void> => {
       let user = await prisma.user.findUnique({
         where: { phone: state.userId }
       });
-      
+
       if (!user) {
         user = await prisma.user.create({
           data: { phone: state.userId }
         });
       }
-      
+
+      // Prisma JSON fields: must be `undefined` or a JSON value (not null unless model accepts JsonNull)
       await prisma.conversationState.upsert({
         where: { userId: user.id },
         update: {
           step: state.currentStep,
           context: state.context,
-          lastPropertyId: state.lastPropertyId || null,
-          lastSearchQuery: state.lastSearchQuery || null
+          lastPropertyId: toNullOrUndefinedPrismaJson(state.lastPropertyId),
+          lastSearchQuery: toNullOrUndefinedPrismaJson(state.lastSearchQuery)
         },
         create: {
           userId: user.id,
           step: state.currentStep,
           context: state.context,
-          lastPropertyId: state.lastPropertyId || null,
-          lastSearchQuery: state.lastSearchQuery || null
+          lastPropertyId: toNullOrUndefinedPrismaJson(state.lastPropertyId),
+          lastSearchQuery: toNullOrUndefinedPrismaJson(state.lastSearchQuery)
         }
       });
     }
