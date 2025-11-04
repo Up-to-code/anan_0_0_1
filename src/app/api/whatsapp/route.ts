@@ -9,7 +9,6 @@ import { validateEnvironment } from '@/lib/config/validation';
 const VERCEL_ENV = process.env.VERCEL_ENV || 'development';
 const IS_VERCEL = !!process.env.VERCEL;
 
-// Enhanced logging function for Vercel
 function log(level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>) {
   const timestamp = new Date().toISOString();
   const prefix = `[${timestamp}] [${VERCEL_ENV}] [${level.toUpperCase()}]`;
@@ -287,9 +286,11 @@ export async function POST(request: NextRequest) {
     // Get WhatsApp handler
     log('info', '🔧 Getting WhatsApp Handler', { requestId });
     const handler = getDefaultWhatsAppHandler();
-    log('info', '✅ Handler Obtained', { requestId });
+    
+    // CRITICAL FIX: Create a promise to track when all message processing is complete
+    const messageProcessingPromises: Promise<void>[] = [];
 
-    // Set webhook handlers
+    // Set webhook handlers BEFORE processing the webhook
     log('info', '🔗 Setting Webhook Handlers', { requestId });
     handler.setWebhookHandlers({
       onMessage: async (message) => {
@@ -302,89 +303,95 @@ export async function POST(request: NextRequest) {
           hasText: !!message.text?.body
         });
         
-        try {
-          // Mark as read immediately
-          if (message.id) {
-            log('info', '✅ Marking Message as Read', {
+        // Create a promise for this message processing
+        const processingPromise = (async () => {
+          try {
+            // Mark as read immediately
+            if (message.id) {
+              log('info', '✅ Marking Message as Read', {
+                requestId,
+                messageId: message.id
+              });
+              
+              try {
+                const markResult = await handler.markAsRead(message.id);
+                log('info', '✅ Message Marked as Read', {
+                  requestId,
+                  messageId: message.id,
+                  result: markResult
+                });
+              } catch (markError) {
+                log('error', '❌ Failed to Mark Message as Read', {
+                  requestId,
+                  messageId: message.id,
+                  error: markError instanceof Error ? markError.message : String(markError),
+                  stack: markError instanceof Error ? markError.stack : undefined
+                });
+              }
+            }
+
+            const whatsappMessage: WhatsAppMessage = {
+              ...message,
+              to: (message as Record<string, unknown>).to as string || '',
+              type: (message.type || 'unknown') as WhatsAppMessage['type']
+            } as WhatsAppMessage;
+            
+            logMessageDetails(whatsappMessage);
+            
+            if (!shouldProcessMessage(whatsappMessage)) {
+              log('info', '⏭️ Skipping Message - Not Processable', {
+                requestId,
+                messageId: message.id,
+                type: whatsappMessage.type,
+                isUserMessage: isUserMessage(whatsappMessage)
+              });
+              return;
+            }
+            
+            log('info', '🔄 Processing Message', {
               requestId,
               messageId: message.id
             });
             
-            try {
-              const markResult = await handler.markAsRead(message.id);
-              log('info', '✅ Message Marked as Read', {
-                requestId,
-                messageId: message.id,
-                result: markResult
-              });
-            } catch (markError) {
-              log('error', '❌ Failed to Mark Message as Read', {
-                requestId,
-                messageId: message.id,
-                error: markError instanceof Error ? markError.message : String(markError),
-                stack: markError instanceof Error ? markError.stack : undefined
-              });
-            }
-          }
-
-          const whatsappMessage: WhatsAppMessage = {
-            ...message,
-            to: (message as Record<string, unknown>).to as string || '',
-            type: (message.type || 'unknown') as WhatsAppMessage['type']
-          } as WhatsAppMessage;
-          
-          logMessageDetails(whatsappMessage);
-          
-          if (!shouldProcessMessage(whatsappMessage)) {
-            log('info', '⏭️ Skipping Message - Not Processable', {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await processMessage(whatsappMessage as any, handler);
+            
+            const msgDuration = Date.now() - msgStartTime;
+            log('info', '✅ Message Processed Successfully', {
               requestId,
               messageId: message.id,
-              type: whatsappMessage.type,
-              isUserMessage: isUserMessage(whatsappMessage)
+              durationMs: msgDuration
             });
-            return;
-          }
-          
-          log('info', '🔄 Processing Message', {
-            requestId,
-            messageId: message.id
-          });
-          
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await processMessage(whatsappMessage as any, handler);
-          
-          const msgDuration = Date.now() - msgStartTime;
-          log('info', '✅ Message Processed Successfully', {
-            requestId,
-            messageId: message.id,
-            durationMs: msgDuration
-          });
-        } catch (error) {
-          log('error', '❌ Error Processing Message', {
-            requestId,
-            messageId: message.id,
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined
-          });
-          
-          try {
-            const errorMessage = 'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.';
-            const messageFrom = message?.from;
-            if (messageFrom) {
-              log('info', '📤 Sending Error Message to User', {
-                requestId,
-                to: messageFrom
-              });
-              await handler.sendMessage(messageFrom, errorMessage);
-              log('info', '✅ Error Message Sent', { requestId });
-            }
-          } catch (sendError) {
-            log('error', '❌ Failed to Send Error Message', {
+          } catch (error) {
+            log('error', '❌ Error Processing Message', {
               requestId,
-              error: sendError instanceof Error ? sendError.message : String(sendError)
+              messageId: message.id,
+              error: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined
             });
+            
+            try {
+              const errorMessage = 'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.';
+              const messageFrom = message?.from;
+              if (messageFrom) {
+                log('info', '📤 Sending Error Message to User', {
+                  requestId,
+                  to: messageFrom
+                });
+                await handler.sendMessage(messageFrom, errorMessage);
+                log('info', '✅ Error Message Sent', { requestId });
+              }
+            } catch (sendError) {
+              log('error', '❌ Failed to Send Error Message', {
+                requestId,
+                error: sendError instanceof Error ? sendError.message : String(sendError)
+              });
+            }
           }
-        }
+        })();
+        
+        // Add to tracking array
+        messageProcessingPromises.push(processingPromise);
       },
       
       onMessageStatus: (status) => {
@@ -430,6 +437,16 @@ export async function POST(request: NextRequest) {
       body, 
       shouldVerifySignature ? signature : undefined
     );
+    
+    // CRITICAL FIX: Wait for all message processing to complete
+    log('info', '⏳ Waiting for all message processing to complete...', {
+      requestId,
+      pendingMessages: messageProcessingPromises.length
+    });
+    
+    await Promise.all(messageProcessingPromises);
+    
+    log('info', '✅ All messages processed', { requestId });
     
     const duration = Date.now() - startTime;
     log('info', '🎉 POST Request Completed Successfully', {
