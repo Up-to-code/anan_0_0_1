@@ -5,137 +5,77 @@ import type { WebhookMessage } from '@/lib/libs/WhatsAppHandler';
 import { initializeDatabase } from '@/lib/db/init';
 import { validateEnvironment } from '@/lib/config/validation';
 
+// ==================== VERCEL LOGGING UTILITIES ====================
+const VERCEL_ENV = process.env.VERCEL_ENV || 'development';
+const IS_VERCEL = !!process.env.VERCEL;
+
+// Enhanced logging function for Vercel
+function log(level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>) {
+  const timestamp = new Date().toISOString();
+  const prefix = `[${timestamp}] [${VERCEL_ENV}] [${level.toUpperCase()}]`;
+  
+  if (data) {
+    console[level === 'error' ? 'error' : 'log'](prefix, message, JSON.stringify(data, null, 2));
+  } else {
+    console[level === 'error' ? 'error' : 'log'](prefix, message);
+  }
+}
+
+// Log initialization
+log('info', '🚀 WhatsApp API Route Initializing', {
+  isVercel: IS_VERCEL,
+  environment: VERCEL_ENV,
+  nodeVersion: process.version,
+  region: process.env.VERCEL_REGION || 'unknown'
+});
+
 // Validate environment on startup
-validateEnvironment();
+try {
+  validateEnvironment();
+  log('info', '✅ Environment validated successfully');
+} catch (error) {
+  log('error', '❌ Environment validation failed', {
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
 
 // Initialize database on startup
-initializeDatabase();
+try {
+  initializeDatabase();
+  log('info', '✅ Database initialized successfully');
+} catch (error) {
+  log('error', '❌ Database initialization failed', {
+    error: error instanceof Error ? error.message : String(error)
+  });
+}
 
-// Enhanced interfaces for better type safety
+// ==================== TYPE DEFINITIONS ====================
 interface WhatsAppMessage {
   id: string;
   from: string;
   to: string;
   timestamp: string;
   type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contacts' | 'interactive' | 'button' | 'list' | 'order' | 'system' | 'unknown';
-  text?: {
-    body: string;
-  };
-  image?: {
-    id: string;
-    caption?: string;
-  };
-  document?: {
-    id: string;
-    filename?: string;
-    caption?: string;
-  };
-  audio?: {
-    id: string;
-  };
-  video?: {
-    id: string;
-    caption?: string;
-  };
-  location?: {
-    latitude: number;
-    longitude: number;
-    name?: string;
-    address?: string;
-  };
-  contacts?: Array<{
-    addresses?: Array<{
-      street?: string;
-      city?: string;
-      state?: string;
-      zip?: string;
-      country?: string;
-      country_code?: string;
-      type?: string;
-    }>;
-    birthday?: string;
-    emails?: Array<{
-      email?: string;
-      type?: string;
-    }>;
-    name?: {
-      formatted_name?: string;
-      first_name?: string;
-      last_name?: string;
-      middle_name?: string;
-      suffix?: string;
-      prefix?: string;
-    };
-    org?: {
-      company?: string;
-      department?: string;
-      title?: string;
-    };
-    phones?: Array<{
-      phone?: string;
-      wa_id?: string;
-      type?: string;
-    }>;
-    urls?: Array<{
-      url?: string;
-      type?: string;
-    }>;
-  }>;
+  text?: { body: string };
+  image?: { id: string; caption?: string };
+  document?: { id: string; filename?: string; caption?: string };
+  audio?: { id: string };
+  video?: { id: string; caption?: string };
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
+  contacts?: Array<Record<string, unknown>>;
   interactive?: {
     type: 'button_reply' | 'list_reply' | 'nfm_reply' | 'product' | 'product_list' | 'order';
-    button_reply?: {
-      id: string;
-      title: string;
-    };
-    list_reply?: {
-      id: string;
-      title: string;
-      description?: string;
-    };
-    nfm_reply?: {
-      response_json?: Record<string, unknown>;
-      body?: string;
-    };
+    button_reply?: { id: string; title: string };
+    list_reply?: { id: string; title: string; description?: string };
+    nfm_reply?: { response_json?: Record<string, unknown>; body?: string };
   };
-  button?: {
-    text: string;
-    payload: string;
-  };
-  list?: {
-    id: string;
-    title: string;
-    description?: string;
-  };
-  order?: {
-    catalog_id: string;
-    product_items: Array<{
-      product_retailer_id: string;
-      quantity: number;
-      item_price: number;
-      currency: string;
-    }>;
-    text?: string;
-  };
-  system?: {
-    type: 'user_changed_number' | 'user_completed_chat' | 'customer_feedback';
-    body: string;
-    new_wa_id?: string;
-  };
+  button?: { text: string; payload: string };
   context?: {
     id: string;
     forwarded?: boolean;
     frequently_forwarded?: boolean;
-    from?: string;
-    referred_product?: {
-      catalog_id: string;
-      product_retailer_id: string;
-    };
   };
-  errors?: Array<{
-    code: number;
-    title: string;
-    message: string;
-  }>;
+  errors?: Array<{ code: number; title: string; message: string }>;
 }
 
 interface MessageStatus {
@@ -143,78 +83,28 @@ interface MessageStatus {
   status: 'sent' | 'delivered' | 'read' | 'failed';
   recipient_id: string;
   timestamp: string;
-  conversation?: {
-    id: string;
-    origin: {
-      type: string;
-    };
-  };
-  pricing?: {
-    pricing_model: string;
-    billable: boolean;
-    category: string;
-  };
-  errors?: Array<{
-    code: number;
-    title: string;
-    message: string;
-  }>;
+  conversation?: { id: string };
+  pricing?: { pricing_model: string; billable: boolean; category: string };
+  errors?: Array<{ code: number; title: string; message: string }>;
 }
 
-interface WebhookChange {
-  id: string;
-  field: 'messages' | 'message_template_status_update' | 'account_update' | 'phone_number_name_update' | 'phone_number_quality_update';
-  value: {
-    messaging_product: 'whatsapp';
-    metadata?: {
-      display_phone_number: string;
-    };
-    messages?: WhatsAppMessage[];
-    statuses?: MessageStatus[];
-      [key: string]: unknown;
-  };
-}
-
-interface WebhookEntry {
-  id: string;
-  changes: WebhookChange[];
-}
-
-interface EnhancedWebhookMessage {
-  object: 'whatsapp_business_account';
-  entry: WebhookEntry[];
-}
-
-// Helper function to check if message is from a user (not from our business)
+// ==================== HELPER FUNCTIONS ====================
 function isUserMessage(message: WhatsAppMessage): boolean {
-  // Check if message has a 'from' field (user messages do)
   return !!message.from && !message.from.includes('business');
 }
 
-// Helper function to check if message should be processed
 function shouldProcessMessage(message: WhatsAppMessage): boolean {
-  // Only process messages from users
   if (!isUserMessage(message)) return false;
-  
-  // Skip system messages
   if (message.type === 'system') return false;
   
-  // Process text messages
   if (message.type === 'text') {
-    if (!message.text?.body) return false;
-    if (message.text.body.trim() === '') return false;
-    return true;
+    return !!(message.text?.body && message.text.body.trim() !== '');
   }
   
-  // Process interactive messages (button replies, list replies)
   if (message.type === 'interactive') {
-    if (message.interactive?.button_reply?.title || message.interactive?.list_reply?.title) {
-      return true;
-    }
-    return false;
+    return !!(message.interactive?.button_reply?.title || message.interactive?.list_reply?.title);
   }
   
-  // Process button messages
   if (message.type === 'button' && message.button?.text) {
     return true;
   }
@@ -222,7 +112,6 @@ function shouldProcessMessage(message: WhatsAppMessage): boolean {
   return false;
 }
 
-// Helper function to extract message content
 function extractMessageContent(message: WhatsAppMessage): string | null {
   if (message.type === 'text' && message.text?.body) {
     return message.text.body.trim();
@@ -244,17 +133,16 @@ function extractMessageContent(message: WhatsAppMessage): string | null {
   return null;
 }
 
-// Helper function to log message details
 function logMessageDetails(message: WhatsAppMessage): void {
   const content = extractMessageContent(message);
   const preview = content ? content.substring(0, 50) + (content.length > 50 ? '...' : '') : 'No content';
   
-  console.log('📩 Message details:', {
-    id: message.id,
+  log('info', '📩 Message Details', {
+    messageId: message.id,
     from: message.from,
     to: message.to,
     type: message.type,
-    content: preview,
+    contentPreview: preview,
     timestamp: message.timestamp,
     hasContext: !!message.context,
     isForwarded: !!message.context?.forwarded,
@@ -263,7 +151,6 @@ function logMessageDetails(message: WhatsAppMessage): void {
   });
 }
 
-// Helper function to log status details
 function logStatusDetails(status: MessageStatus): void {
   const statusEmoji: Record<string, string> = {
     sent: '📤',
@@ -274,29 +161,31 @@ function logStatusDetails(status: MessageStatus): void {
   
   const emoji = statusEmoji[status.status] || '📊';
   
-  console.log(`${emoji} Message status update:`, {
-    id: status.id,
+  log('info', `${emoji} Message Status Update`, {
+    statusId: status.id,
     status: status.status,
-    recipient: status.recipient_id,
+    recipientId: status.recipient_id,
     timestamp: status.timestamp,
     conversationId: status.conversation?.id,
     hasErrors: !!(status.errors && status.errors.length > 0),
-    pricing: status.pricing ? {
-      model: status.pricing.pricing_model,
-      billable: status.pricing.billable,
-      category: status.pricing.category
-    } : null
+    pricing: status.pricing
   });
   
-  // Log errors if any
   if (status.errors && status.errors.length > 0) {
     status.errors.forEach(error => {
-      console.error(`❌ Message error (${error.code}): ${error.title} - ${error.message}`);
+      log('error', `❌ Message Error (${error.code})`, {
+        title: error.title,
+        message: error.message
+      });
     });
   }
 }
 
+// ==================== GET HANDLER (Webhook Verification) ====================
 export async function GET(request: NextRequest) {
+  const requestId = Math.random().toString(36).substring(7);
+  log('info', '🔍 GET Request Started', { requestId });
+  
   try {
     const searchParams = request.nextUrl.searchParams;
     const query: Record<string, string> = {};
@@ -305,20 +194,22 @@ export async function GET(request: NextRequest) {
       query[key] = value;
     });
 
-    console.log('🔍 Webhook verification request:', {
+    log('info', '🔍 Webhook Verification Request', {
+      requestId,
       mode: query['hub.mode'],
-      token: query['hub.verify_token'] ? '***' + query['hub.verify_token'].slice(-4) : 'missing',
-      challenge: query['hub.challenge'] ? 'present' : 'missing',
-      expectedToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ? '***' + process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN.slice(-4) : 'missing'
+      hasToken: !!query['hub.verify_token'],
+      hasChallenge: !!query['hub.challenge'],
+      hasExpectedToken: !!process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN
     });
 
-    // If no hub parameters, return helpful message
     if (!query['hub.mode'] && !query['hub.verify_token'] && !query['hub.challenge']) {
+      log('info', 'ℹ️ Health Check Request', { requestId });
       return NextResponse.json({
         message: 'WhatsApp Webhook Endpoint',
         status: 'ready',
-        info: 'This endpoint should be called by Meta/Facebook with verification parameters',
-        expectedParams: ['hub.mode', 'hub.verify_token', 'hub.challenge']
+        environment: VERCEL_ENV,
+        region: process.env.VERCEL_REGION || 'unknown',
+        timestamp: new Date().toISOString()
       }, { status: 200 });
     }
 
@@ -326,17 +217,24 @@ export async function GET(request: NextRequest) {
     const result = handler.verifyWebhookRequest(query);
 
     if (result.success && result.challenge) {
-      console.log('✅ Webhook verified successfully');
+      log('info', '✅ Webhook Verified Successfully', { requestId });
       return new NextResponse(result.challenge, { status: 200 });
     }
 
-    console.log('❌ Webhook verification failed:', result.error);
+    log('error', '❌ Webhook Verification Failed', {
+      requestId,
+      error: result.error
+    });
     return NextResponse.json(
       { error: result.error || 'Verification failed' },
       { status: 403 }
     );
   } catch (error) {
-    console.error('❌ GET request error:', error);
+    log('error', '❌ GET Request Error', {
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
@@ -344,182 +242,213 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// ==================== POST HANDLER (Webhook Processing) ====================
 export async function POST(request: NextRequest) {
-  console.log('🚀 ========== POST /api/whatsapp STARTED ==========');
-  console.log('⏰ Timestamp:', new Date().toISOString());
+  const requestId = Math.random().toString(36).substring(7);
+  const startTime = Date.now();
+  
+  log('info', '🚀 POST Request Started', {
+    requestId,
+    timestamp: new Date().toISOString(),
+    region: process.env.VERCEL_REGION || 'unknown'
+  });
   
   try {
     const signature = request.headers.get('x-hub-signature-256') || undefined;
-    console.log('📋 Headers:', {
+    
+    log('info', '📋 Request Headers', {
+      requestId,
       hasSignature: !!signature,
       contentType: request.headers.get('content-type'),
       userAgent: request.headers.get('user-agent')
     });
     
-    // Parse body as WebhookMessage (same as working route)
+    // Parse request body
     let body: WebhookMessage;
     try {
       body = await request.json() as WebhookMessage;
-      console.log('✅ Request body parsed successfully');
-      console.log('📨 Received webhook:', {
+      log('info', '✅ Request Body Parsed', {
+        requestId,
         object: body.object,
         entryCount: body.entry?.length || 0,
-        messages: body.entry?.reduce((acc, entry) => 
+        messageCount: body.entry?.reduce((acc, entry) => 
           acc + (entry.changes.find(c => c.field === 'messages')?.value.messages?.length || 0), 0) || 0,
-        statuses: body.entry?.reduce((acc, entry) => 
+        statusCount: body.entry?.reduce((acc, entry) => 
           acc + (entry.changes.find(c => c.field === 'messages')?.value.statuses?.length || 0), 0) || 0
       });
     } catch (parseError) {
-      console.error('❌ Failed to parse request body:', parseError);
-      return NextResponse.json(
-        { error: 'Invalid JSON body' },
-        { status: 400 }
-      );
+      log('error', '❌ Failed to Parse Request Body', {
+        requestId,
+        error: parseError instanceof Error ? parseError.message : String(parseError)
+      });
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     
-    console.log('🔧 Getting WhatsApp handler...');
+    // Get WhatsApp handler
+    log('info', '🔧 Getting WhatsApp Handler', { requestId });
     const handler = getDefaultWhatsAppHandler();
-    console.log('✅ Handler obtained');
+    log('info', '✅ Handler Obtained', { requestId });
 
-    // Set handlers BEFORE processing (same pattern as working route)
-    console.log('🔗 Setting webhook handlers...');
+    // Set webhook handlers
+    log('info', '🔗 Setting Webhook Handlers', { requestId });
     handler.setWebhookHandlers({
       onMessage: async (message) => {
-        console.log('🔔 ========== onMessage HANDLER CALLED ==========');
-        console.log('🔔 onMessage handler called:', {
+        const msgStartTime = Date.now();
+        log('info', '🔔 onMessage Handler Triggered', {
+          requestId,
           messageId: message.id,
           from: message.from,
           type: message.type,
-          hasText: !!message.text?.body,
-          timestamp: message.timestamp
+          hasText: !!message.text?.body
         });
         
         try {
-          // MARK AS READ IMMEDIATELY when message arrives
+          // Mark as read immediately
           if (message.id) {
-            console.log('✅ Marking message as read:', message.id);
+            log('info', '✅ Marking Message as Read', {
+              requestId,
+              messageId: message.id
+            });
+            
             try {
               const markResult = await handler.markAsRead(message.id);
-              console.log('✅ Message marked as read successfully:', message.id, 'Result:', markResult);
+              log('info', '✅ Message Marked as Read', {
+                requestId,
+                messageId: message.id,
+                result: markResult
+              });
             } catch (markError) {
-              console.error('❌ Failed to mark message as read:', markError);
-              if (markError instanceof Error) {
-                console.error('Mark error details:', markError.message, markError.stack);
-              }
-              // Don't throw - continue processing even if mark fails
+              log('error', '❌ Failed to Mark Message as Read', {
+                requestId,
+                messageId: message.id,
+                error: markError instanceof Error ? markError.message : String(markError),
+                stack: markError instanceof Error ? markError.stack : undefined
+              });
             }
-          } else {
-            console.warn('⚠️ Message has no ID, cannot mark as read');
           }
 
-          // Convert to our WhatsAppMessage format (add 'to' field if missing)
           const whatsappMessage: WhatsAppMessage = {
             ...message,
             to: (message as Record<string, unknown>).to as string || '',
             type: (message.type || 'unknown') as WhatsAppMessage['type']
           } as WhatsAppMessage;
           
-          // Log message details
           logMessageDetails(whatsappMessage);
           
-          // Check if we should process this message
           if (!shouldProcessMessage(whatsappMessage)) {
-            console.log('⏭️ Skipping message - not processable:', {
+            log('info', '⏭️ Skipping Message - Not Processable', {
+              requestId,
+              messageId: message.id,
               type: whatsappMessage.type,
               isUserMessage: isUserMessage(whatsappMessage)
             });
             return;
           }
           
-          // Process the message
-          console.log('🔄 Processing message:', message.id);
+          log('info', '🔄 Processing Message', {
+            requestId,
+            messageId: message.id
+          });
+          
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await processMessage(whatsappMessage as any, handler);
-          console.log('✅ Message processed successfully');
+          
+          const msgDuration = Date.now() - msgStartTime;
+          log('info', '✅ Message Processed Successfully', {
+            requestId,
+            messageId: message.id,
+            durationMs: msgDuration
+          });
         } catch (error) {
-          console.error('❌ Error processing message:', error);
+          log('error', '❌ Error Processing Message', {
+            requestId,
+            messageId: message.id,
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          });
           
-          // Enhanced error logging
-          if (error instanceof Error) {
-            console.error('Error stack:', error.stack);
-          }
-          
-          // Try to send error message to user
           try {
             const errorMessage = 'عذراً، حدث خطأ في معالجة رسالتك. يرجى المحاولة مرة أخرى لاحقاً.';
             const messageFrom = message?.from;
             if (messageFrom) {
-              console.log('📤 Sending error message to:', messageFrom);
+              log('info', '📤 Sending Error Message to User', {
+                requestId,
+                to: messageFrom
+              });
               await handler.sendMessage(messageFrom, errorMessage);
-              console.log('✅ Error message sent to user');
-            } else {
-              console.error('❌ Cannot send error message: missing from field');
+              log('info', '✅ Error Message Sent', { requestId });
             }
           } catch (sendError) {
-            console.error('❌ Failed to send error message:', sendError);
-            if (sendError instanceof Error) {
-              console.error('Send error details:', sendError.message, sendError.stack);
-            }
+            log('error', '❌ Failed to Send Error Message', {
+              requestId,
+              error: sendError instanceof Error ? sendError.message : String(sendError)
+            });
           }
         }
-        console.log('🔔 ========== onMessage HANDLER COMPLETED ==========');
       },
+      
       onMessageStatus: (status) => {
-        console.log('🔔 onMessageStatus handler called:', {
+        log('info', '🔔 onMessageStatus Handler Triggered', {
+          requestId,
           statusId: status.id,
           status: status.status,
-          recipient: status.recipient_id,
-          timestamp: status.timestamp
+          recipientId: status.recipient_id
         });
+        
         try {
           logStatusDetails(status as MessageStatus);
         } catch (error) {
-          console.error('❌ Error logging status:', error);
-        }
-      },
-      onError: (error) => {
-        console.error('❌ Webhook handler error:', error);
-        if (error instanceof Error) {
-          console.error('Error details:', {
-            message: error.message,
-            stack: error.stack
+          log('error', '❌ Error Logging Status', {
+            requestId,
+            error: error instanceof Error ? error.message : String(error)
           });
         }
       },
+      
+      onError: (error) => {
+        log('error', '❌ Webhook Handler Error', {
+          requestId,
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      },
     });
-    console.log('✅ Handlers set successfully');
+    
+    log('info', '✅ Handlers Set Successfully', { requestId });
 
-    // Process the webhook request (exactly like working route)
+    // Process webhook request
     const shouldVerifySignature = process.env.WHATSAPP_APP_SECRET && signature;
-    console.log('🔐 Signature verification:', {
+    log('info', '🔐 Signature Verification Check', {
+      requestId,
       shouldVerify: shouldVerifySignature,
       hasAppSecret: !!process.env.WHATSAPP_APP_SECRET,
       hasSignature: !!signature
     });
     
-    console.log('📞 Calling processWebhookRequest...');
+    log('info', '📞 Calling processWebhookRequest', { requestId });
     const result = await handler.processWebhookRequest(
       body, 
       shouldVerifySignature ? signature : undefined
     );
     
-    console.log('🚀 ========== POST /api/whatsapp COMPLETED ==========');
+    const duration = Date.now() - startTime;
+    log('info', '🎉 POST Request Completed Successfully', {
+      requestId,
+      durationMs: duration,
+      result
+    });
+    
     return NextResponse.json(result, { status: 200 });
   } catch (error: unknown) {
-    console.error('🚀 ========== POST /api/whatsapp ERROR ==========');
-    console.error('❌ POST request error:', error);
+    const duration = Date.now() - startTime;
+    log('error', '❌ POST Request Error', {
+      requestId,
+      durationMs: duration,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    
     const errorMessage = error instanceof Error ? error.message : 'Internal server error';
-    
-    // Enhanced error logging
-    if (error instanceof Error) {
-      console.error('Error stack:', error.stack);
-    }
-    
-    console.error('🚀 ========== POST /api/whatsapp ERROR END ==========');
-    
-    return NextResponse.json(
-      { error: errorMessage },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
